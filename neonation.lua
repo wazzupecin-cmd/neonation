@@ -22,7 +22,6 @@ local LG = LP:WaitForChild("PlayerGui")
 
 -- Реестр всех "вечных" коннектов (для полного анлоада)
 local LIVE = {}
-local function track(c) LIVE[#LIVE+1] = c; return c end
 
 -- ═══════════════════════════════════════════════════════════════
 --  НАСТРОЙКИ
@@ -219,6 +218,9 @@ local function enableESP()
     espConn = Players.PlayerAdded:Connect(createESP)
     espLeaveConn = Players.PlayerRemoving:Connect(removeESP)
     espUpdateConn = RunService.Heartbeat:Connect(updateESPDistances)
+    LIVE[#LIVE+1] = espConn
+    LIVE[#LIVE+1] = espLeaveConn
+    LIVE[#LIVE+1] = espUpdateConn
 end
 
 local function disableESP()
@@ -234,8 +236,6 @@ end
 
 -- ═══════════════════════════════════════════════════════════════
 --  BANK ESP (подсветка + таймер ограбления)  [NEW v2.3]
---  Если знаешь точный путь к переменной — впиши в BANK_MANUAL_PATH,
---  например: "Workspace.BankRobbery"
 -- ═══════════════════════════════════════════════════════════════
 local BANK_MANUAL_PATH = ""   -- <-- сюда можно вписать точный путь
 
@@ -277,11 +277,9 @@ local function scanBank()
         for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do table.insert(all, d) end
     end)
 
-    -- проход 1: точное вхождение "bankrobbery"
     for _, d in ipairs(all) do
         if d.Name:lower():find("bankrobbery") then classifyBank(d) end
     end
-    -- проход 2: любое "bank"
     for _, d in ipairs(all) do
         if d.Name:lower():find("bank") then classifyBank(d) end
         if bankPart and bankValue then break end
@@ -299,7 +297,7 @@ local function interpretBankValue(v)
     if typeof(v) == "boolean" then
         if v then return "МОЖНО ГРАБИТЬ" else return "НЕДОСТУПНО (кулдаун)" end
     elseif typeof(v) == "number" then
-        if v > 1000000000 then            -- unix timestamp
+        if v > 1000000000 then
             local left = v - os.time()
             if left <= 0 then return "МОЖНО ГРАБИТЬ" end
             return "ограбление через " .. formatTime(left)
@@ -423,17 +421,18 @@ local function updateBankTexts()
     end
 end
 
+local bankLoopThread = nil
+
 local function enableBankESP()
     scanBank()
     if bankPart then attachBankHighlight(bankPart) end
     createBankHud()
     updateBankTexts()
 
-    task.spawn(function()
+    bankLoopThread = task.spawn(function()
         local tick = 0
         while Settings.bankESP do
             tick = tick + 1
-            -- если банк не найден — периодически ищем заново
             if (not bankPart and not bankValue) and tick % 10 == 0 then
                 scanBank()
                 if bankPart then attachBankHighlight(bankPart) end
@@ -442,10 +441,15 @@ local function enableBankESP()
             task.wait(0.5)
         end
     end)
+    LIVE[#LIVE+1] = bankLoopThread
 end
 
 local function disableBankESP()
     Settings.bankESP = false
+    if bankLoopThread then
+        task.cancel(bankLoopThread)
+        bankLoopThread = nil
+    end
     for _, data in pairs(bankBBs) do
         pcall(function() data.bb:Destroy() end)
         pcall(function() data.box:Destroy() end)
@@ -573,16 +577,17 @@ local function pickTarget(fov)
             local root = p.Character:FindFirstChild("HumanoidRootPart")
             if root then
                 local dist = (root.Position - myPos).Magnitude
-               if dist <= 500 then
-      local pos = getAimPosition(p.Character)
-      if pos then
-          local sp, on = Camera:WorldToScreenPoint(pos)
-          if on then
-              local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-              if d < bestDist then best, bestDist = p, d end
-                 end
-              end
-           end
+                if dist <= 500 then
+                    local pos = getAimPosition(p.Character)
+                    if pos then
+                        local sp, on = Camera:WorldToScreenPoint(pos)
+                        if on then
+                            local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                            if d < bestDist then best, bestDist = p, d end
+                        end
+                    end
+                end
+            end
         end
     end
     return best
@@ -800,7 +805,13 @@ local function unloadCheat()
     pcall(updateFOVCircles)
 
     for _, cn in ipairs(LIVE) do
-        pcall(function() cn:Disconnect() end)
+        pcall(function() 
+            if type(cn) == "thread" then 
+                task.cancel(cn) 
+            else 
+                cn:Disconnect() 
+            end 
+        end)
     end
 
     pcall(function() Blur:Destroy() end)
@@ -974,17 +985,17 @@ local function createSliderEx(parent, labelTxt, minV, maxV, getVal, setVal, acce
     updateVisual()
 
     local dragSlider = false
-    track(Track.InputBegan:Connect(function(inp)
+    local conn1 = Track.InputBegan:Connect(function(inp)
         if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
             dragSlider = true
         end
-    end))
-    track(UserInputService.InputEnded:Connect(function(inp)
+    end)
+    local conn2 = UserInputService.InputEnded:Connect(function(inp)
         if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
             dragSlider = false
         end
-    end))
-    track(UserInputService.InputChanged:Connect(function(inp)
+    end)
+    local conn3 = UserInputService.InputChanged:Connect(function(inp)
         if dragSlider and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch) then
             local abs  = Track.AbsolutePosition
             local sz   = Track.AbsoluteSize
@@ -993,7 +1004,10 @@ local function createSliderEx(parent, labelTxt, minV, maxV, getVal, setVal, acce
             setVal(newV)
             updateVisual()
         end
-    end))
+    end)
+    LIVE[#LIVE+1] = conn1
+    LIVE[#LIVE+1] = conn2
+    LIVE[#LIVE+1] = conn3
     return Row
 end
 
@@ -1288,7 +1302,6 @@ createToggleEx(secESP, "眼", "Enable ESP", "Показывать информа
         if Settings.espEnabled then enableESP() else disableESP() end
     end)
 
--- [NEW v2.3] Bank ESP
 createToggleEx(secESP, "銀", "Bank ESP", "Подсветка банка + таймер ограбления", C.bank_col,
     function() return Settings.bankESP end,
     function()
@@ -1433,7 +1446,12 @@ CloseBtn.MouseLeave:Connect(function()
     TweenService:Create(CloseBtn, TweenInfo.new(0.1), { BackgroundColor3 = Color3.fromRGB(30,30,50), TextColor3 = C.subtext }):Play()
 end)
 
-track(UserInputService.InputBegan:Connect(function(inp, gp)
+-- Сохраняем все соединения для анлоада
+local function addConnection(cn)
+    LIVE[#LIVE+1] = cn
+end
+
+addConnection(UserInputService.InputBegan:Connect(function(inp, gp)
     if gp then return end
     if inp.KeyCode == Enum.KeyCode.K then
         if isOpen then closeMenu() else openMenu() end
@@ -1441,7 +1459,7 @@ track(UserInputService.InputBegan:Connect(function(inp, gp)
 end))
 
 local pv, pd = 0.15, 1
-track(RunService.Heartbeat:Connect(function(dt)
+addConnection(RunService.Heartbeat:Connect(function(dt)
     if not isOpen then return end
     pv = pv + pd * dt * 0.4
     if pv >= 0.6 then pd = -1 end
@@ -1450,21 +1468,21 @@ track(RunService.Heartbeat:Connect(function(dt)
 end))
 
 local ang = 0
-track(RunService.Heartbeat:Connect(function(dt)
+addConnection(RunService.Heartbeat:Connect(function(dt)
     ang = (ang + dt * 20) % 360
     titleGrad.Rotation = ang
 end))
 
 local dragging, dStart, dPos
-track(TopBar.InputBegan:Connect(function(inp)
+addConnection(TopBar.InputBegan:Connect(function(inp)
     if inp.UserInputType == Enum.UserInputType.MouseButton1 then
         dragging = true; dStart = inp.Position; dPos = MainFrame.Position
     end
 end))
-track(TopBar.InputEnded:Connect(function(inp)
+addConnection(TopBar.InputEnded:Connect(function(inp)
     if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end))
-track(UserInputService.InputChanged:Connect(function(inp)
+addConnection(UserInputService.InputChanged:Connect(function(inp)
     if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
         local d = inp.Position - dStart
         MainFrame.Position = UDim2.new(dPos.X.Scale, dPos.X.Offset+d.X, dPos.Y.Scale, dPos.Y.Offset+d.Y)
