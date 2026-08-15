@@ -18,7 +18,7 @@ local Workspace        = game:GetService("Workspace")
 local Camera           = Workspace.CurrentCamera
 
 local LP = Players.LocalPlayer
-local LG = game:GetService("CoreGui")
+local LG = LP:WaitForChild("PlayerGui")
 
 -- Реестр всех "вечных" коннектов (для полного анлоада)
 local LIVE = {}
