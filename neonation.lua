@@ -1,6 +1,6 @@
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║       NEONATION WH  ·  ESP + Aimbot + Bank ESP + Unload       ║
--- ║       v2.3 — Bank ESP с таймером ограбления                   ║
+-- ║       v2.5 — Авто-поиск Bank / Jewellery по точным путям      ║
 -- ╚══════════════════════════════════════════════════════════════╝
 -- K  — открыть/закрыть меню
 -- ----------------------------------------------------------------
@@ -234,93 +234,136 @@ local function refreshESP()
 end
 
 -- ═══════════════════════════════════════════════════════════════
---  BANK ESP (подсветка + таймер ограбления)  [UPDATED v2.4]
---  Теперь ищет "bank", "bankrobbery", "puente", "banco" и атрибуты.
---  На банке отображается "Puente Bank", в HUD – только статус/таймер.
+--  BANK / JEWELLERY ESP (Улучшенный поиск по точным путям)
 -- ═══════════════════════════════════════════════════════════════
-local BANK_MANUAL_PATH = ""   -- <-- можно вписать точный путь, если авто-поиск не справляется
+local bankPart = nil          -- объект для подсветки (Part/Model)
+local bankFolder = nil        -- папка Bank с атрибутами
+local bankTimerModel = nil    -- модель BankCooldownTimer или JewelleryCooldownTimer
+local bankTimerLabel = nil    -- TextLabel "Timer" внутри BillboardGui
+local bankIsJewellery = false -- true если найден ювелирный магазин
 
-local bankPart, bankValue = nil, nil
 local bankBBs = {}
 local BankHud, hudLbl = nil, nil
 
-local function getObjectByPath(path)
-    local cur = game
-    for seg in path:gmatch("[^%.]+") do
-        cur = cur:FindFirstChild(seg)
-        if not cur then return nil end
+-- Функция для безопасного получения дочернего объекта по цепочке имён
+local function getChildByPath(parent, ...)
+    local args = {...}
+    local current = parent
+    for _, name in ipairs(args) do
+        if not current then return nil end
+        current = current:FindFirstChild(name)
     end
-    return cur
-end
-
-local function classifyBank(obj)
-    if obj:IsA("BoolValue") or obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("StringValue") then
-        if not bankValue then bankValue = obj end
-    elseif obj:IsA("BasePart") or obj:IsA("Model") then
-        if not bankPart then bankPart = obj end
-    end
+    return current
 end
 
 local function scanBank()
-    bankPart, bankValue = nil, nil
+    -- Сброс
+    bankPart = nil
+    bankFolder = nil
+    bankTimerModel = nil
+    bankTimerLabel = nil
+    bankIsJewellery = false
 
-    -- Если задан ручной путь
-    if BANK_MANUAL_PATH ~= "" then
-        local obj = getObjectByPath(BANK_MANUAL_PATH)
-        if obj then classifyBank(obj) end
-        if bankPart or bankValue then return end
+    -- 1. Ищем папку Bank в Workspace
+    local bankFolderCandidate = Workspace:FindFirstChild("Bank")
+    if bankFolderCandidate and bankFolderCandidate:IsA("Folder") then
+        bankFolder = bankFolderCandidate
+        -- Проверяем атрибуты
+        local bankOpen = bankFolder:GetAttribute("BankOpen")
+        local vaultOpen = bankFolder:GetAttribute("VaultOpen")
+        if bankOpen ~= nil or vaultOpen ~= nil then
+            print("[BankESP] Найдена папка Bank с атрибутами")
+        end
     end
 
-    -- Собираем все объекты из Workspace и ReplicatedStorage
-    local all = {}
-    pcall(function()
-        for _, d in ipairs(Workspace:GetDescendants()) do table.insert(all, d) end
-    end)
-    pcall(function()
-        for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do table.insert(all, d) end
-    end)
-
-    -- Ищем по имени и атрибутам
-    for _, d in ipairs(all) do
-        local name = d.Name:lower()
-        if name:find("bankrobbery") or name:find("bank") or name:find("puente") or name:find("banco") then
-            classifyBank(d)
-        end
-        -- Если ещё не нашли bankPart, проверяем атрибуты
-        if not bankPart then
-            local attrs = d:GetAttributes()
-            for key, _ in pairs(attrs) do
-                local k = key:lower()
-                if k:find("bank") or k:find("robbery") or k:find("puente") then
-                    classifyBank(d)
-                    break
-                end
-            end
-        end
-        if bankPart and bankValue then break end
-    end
-
-    -- Если нашли только bankPart, но нет bankValue – попробуем найти значение внутри bankPart
-    if bankPart and not bankValue then
-        pcall(function()
-            for _, ch in ipairs(bankPart:GetChildren()) do
-                if ch:IsA("ValueBase") then
-                    bankValue = ch
-                    break
-                end
-            end
-        end)
-        if not bankValue then
-            pcall(function()
-                for _, attr in ipairs({"BankRobbery", "RobberyCooldown", "Cooldown", "Timer", "CanRob", "NextRobbery"}) do
-                    local a = bankPart:GetAttribute(attr)
-                    if a ~= nil then
-                        bankValue = bankPart -- сохраняем ссылку для чтения атрибута
-                        break
+    -- 2. Ищем BankCooldownTimer внутри Workspace.Bank
+    if bankFolder then
+        local timerModel = bankFolder:FindFirstChild("BankCooldownTimer")
+        if timerModel and timerModel:IsA("Model") then
+            bankTimerModel = timerModel
+            -- Ищем TextLabel "Timer" внутри BillboardGui
+            local anchor = timerModel:FindFirstChild("BankCooldownAnchor")
+            if anchor then
+                local gui = anchor:FindFirstChild("BankCooldownGui")
+                if gui and gui:IsA("BillboardGui") then
+                    local frame = gui:FindFirstChild("Frame")
+                    if frame then
+                        local timerLabel = frame:FindFirstChild("Timer")
+                        if timerLabel and timerLabel:IsA("TextLabel") then
+                            bankTimerLabel = timerLabel
+                            print("[BankESP] Найден BankCooldownTimer и TextLabel Timer")
+                        end
                     end
                 end
-            end)
+            end
+            -- Для подсветки используем саму модель или её PrimaryPart
+            bankPart = timerModel
         end
+    end
+
+    -- 3. Если не нашли BankCooldownTimer, ищем JewelleryCooldownTimer (ювелирка)
+    if not bankTimerModel then
+        local jewelleryStore = Workspace:FindFirstChild("JewelleryStore")
+        if jewelleryStore then
+            local scriptable = jewelleryStore:FindFirstChild("Scriptable")
+            if scriptable then
+                local timerModel = scriptable:FindFirstChild("JewelleryCooldownTimer")
+                if timerModel and timerModel:IsA("Model") then
+                    bankTimerModel = timerModel
+                    bankIsJewellery = true
+                    local anchor = timerModel:FindFirstChild("JewelleryCooldownAnchor")
+                    if anchor then
+                        local gui = anchor:FindFirstChild("JewelleryCooldownGui")
+                        if gui and gui:IsA("BillboardGui") then
+                            local frame = gui:FindFirstChild("Frame")
+                            if frame then
+                                local timerLabel = frame:FindFirstChild("Timer")
+                                if timerLabel and timerLabel:IsA("TextLabel") then
+                                    bankTimerLabel = timerLabel
+                                    print("[BankESP] Найден JewelleryCooldownTimer и TextLabel Timer")
+                                end
+                            end
+                        end
+                    end
+                    bankPart = timerModel
+                end
+            end
+        end
+    end
+
+    -- 4. Если всё равно не нашли, пробуем старый метод (поиск по имени)
+    if not bankTimerModel then
+        -- Старый код поиска по всем объектам (оставляем как fallback)
+        local all = {}
+        pcall(function()
+            for _, d in ipairs(Workspace:GetDescendants()) do table.insert(all, d) end
+        end)
+        pcall(function()
+            for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do table.insert(all, d) end
+        end)
+        for _, d in ipairs(all) do
+            local name = d.Name:lower()
+            if name:find("bankrobbery") or name:find("bank") or name:find("puente") or name:find("banco") then
+                if not bankPart then bankPart = d end
+                if d:IsA("ValueBase") then
+                    -- сохраняем как банковское значение (fallback)
+                end
+            end
+        end
+        -- Если нашли какой-то объект, попытаемся найти внутри него таймер
+        if bankPart and not bankTimerLabel then
+            for _, child in ipairs(bankPart:GetDescendants()) do
+                if child:IsA("TextLabel") and child.Name:lower():find("timer") then
+                    bankTimerLabel = child
+                    break
+                end
+            end
+        end
+    end
+
+    -- Если есть папка Bank, но не нашли таймер, всё равно используем папку для атрибутов
+    if bankFolder and not bankPart then
+        bankPart = bankFolder -- подсвечиваем папку (можно взять любой дочерний Part)
     end
 end
 
@@ -331,57 +374,91 @@ local function formatTime(sec)
     return string.format("%02d:%02d", m, s)
 end
 
-local function interpretBankValue(v)
-    if typeof(v) == "boolean" then
-        if v then return "Открыт" else return "Закрыт" end
-    elseif typeof(v) == "number" then
-        if v > 1000000000 then
-            local left = v - os.time()
-            if left <= 0 then return "Открыт" end
-            return "⏳ " .. formatTime(left)
-        elseif v <= 0 then
-            return "Открыт"
-        else
-            return "⏳ " .. formatTime(v)
-        end
-    elseif typeof(v) == "string" and v ~= "" then
-        return v
-    end
-    return nil
-end
-
 local function readBankStatus()
-    local sources = {}
-    if bankValue then
-        pcall(function() table.insert(sources, bankValue.Value) end)
-    end
-    if bankPart then
-        for _, attrName in ipairs({"BankRobbery", "RobberyCooldown", "Cooldown", "Timer", "CanRob", "NextRobbery"}) do
-            pcall(function()
-                local a = bankPart:GetAttribute(attrName)
-                if a ~= nil then table.insert(sources, a) end
-            end)
+    -- 1. Сначала пытаемся получить статус из атрибутов папки Bank
+    if bankFolder then
+        local bankOpen = bankFolder:GetAttribute("BankOpen")
+        if bankOpen ~= nil then
+            if bankOpen == true then
+                return "Открыт"
+            else
+                return "Закрыт"
+            end
         end
+        local vaultOpen = bankFolder:GetAttribute("VaultOpen")
+        if vaultOpen ~= nil then
+            if vaultOpen == true then
+                return "Хранилище открыто"
+            else
+                return "Хранилище закрыто"
+            end
+        end
+    end
+
+    -- 2. Читаем текст из Timer TextLabel (если есть)
+    if bankTimerLabel then
+        local text = bankTimerLabel.Text
+        if text and text ~= "" then
+            -- Пробуем распарсить как время MM:SS или просто число секунд
+            local minutes, seconds = text:match("(%d+):(%d+)")
+            if minutes and seconds then
+                local totalSec = tonumber(minutes) * 60 + tonumber(seconds)
+                if totalSec > 0 then
+                    return "⏳ " .. formatTime(totalSec)
+                else
+                    return "Открыт"
+                end
+            end
+            -- Если текст содержит "00:00" или "0:00" – считаем открытым
+            if text:find("00:00") or text:find("0:00") or text:lower():find("open") then
+                return "Открыт"
+            end
+            -- Если текст содержит "closed" или "закрыт"
+            if text:lower():find("closed") or text:lower():find("закрыт") then
+                return "Закрыт"
+            end
+            -- Если это просто число, интерпретируем как секунды
+            local num = tonumber(text)
+            if num and num > 0 then
+                return "⏳ " .. formatTime(num)
+            end
+            -- Возвращаем как есть (возможно, это готовый текст)
+            return text
+        end
+    end
+
+    -- 3. Если ничего не нашли, пробуем старый метод (ValueBase)
+    -- (оставлен для совместимости)
+    local sources = {}
+    if bankPart then
         pcall(function()
             for _, ch in ipairs(bankPart:GetChildren()) do
-                if ch:IsA("ValueBase") then table.insert(sources, ch.Value) end
+                if ch:IsA("ValueBase") then
+                    table.insert(sources, ch.Value)
+                end
             end
         end)
-        if bankPart:IsA("Model") then
-            pcall(function()
-                local pp = bankPart.PrimaryPart or bankPart:FindFirstChildWhichIsA("BasePart", true)
-                if pp then
-                    for _, ch in ipairs(pp:GetChildren()) do
-                        if ch:IsA("ValueBase") then table.insert(sources, ch.Value) end
-                    end
-                end
-            end)
-        end
+        pcall(function()
+            for _, attrName in ipairs({"BankRobbery", "RobberyCooldown", "Cooldown", "Timer", "CanRob", "NextRobbery"}) do
+                local a = bankPart:GetAttribute(attrName)
+                if a ~= nil then table.insert(sources, a) end
+            end
+        end)
     end
     for _, v in ipairs(sources) do
-        local t = interpretBankValue(v)
-        if t then return t end
+        if typeof(v) == "number" then
+            if v > 0 then
+                return "⏳ " .. formatTime(v)
+            else
+                return "Открыт"
+            end
+        elseif typeof(v) == "boolean" then
+            return v and "Открыт" or "Закрыт"
+        elseif typeof(v) == "string" and v ~= "" then
+            return v
+        end
     end
+
     return nil
 end
 
@@ -390,6 +467,13 @@ local function attachBankHighlight(target)
     if target:IsA("Model") then
         local part = target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart", true)
         if not part then return end
+        bbParent = part
+        adornee = part -- подсвечиваем часть модели
+    elseif target:IsA("Folder") then
+        -- Для папки пытаемся найти любую Part внутри
+        local part = target:FindFirstChildWhichIsA("BasePart", true)
+        if not part then return end
+        adornee = part
         bbParent = part
     end
 
@@ -414,7 +498,11 @@ local function attachBankHighlight(target)
     lbl.TextColor3 = C.bank_col
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 14
-    lbl.Text = "Puente Bank"  -- изменено
+    if bankIsJewellery then
+        lbl.Text = "Jewellery Store"
+    else
+        lbl.Text = "Puente Bank"
+    end
     Instance.new("UICorner", lbl).CornerRadius = UDim.new(0,6)
     local st = Instance.new("UIStroke", lbl)
     st.Color = C.bank_col
@@ -447,25 +535,25 @@ local function createBankHud()
     hudLbl.Font = Enum.Font.GothamBold
     hudLbl.TextSize = 13
     hudLbl.TextColor3 = C.bank_col
-    hudLbl.Text = "Поиск банка..."  -- начальный текст
+    hudLbl.Text = "Поиск банка..."
 end
 
 local function updateBankTexts()
     local status = readBankStatus() or "не найден"
-    -- Теперь выводим только статус/таймер, без префикса
     if hudLbl and hudLbl.Parent then hudLbl.Text = status end
-    for _, data in pairs(bankBBs) do
-        if data.lbl and data.lbl.Parent then
-            -- На банке оставляем "Puente Bank", менять не будем
-        end
-    end
+    -- Надпись на банке не меняем (остаётся "Puente Bank" или "Jewellery Store")
 end
 
 local bankLoopThread = nil
 
 local function enableBankESP()
     scanBank()
-    if bankPart then attachBankHighlight(bankPart) end
+    if bankPart then
+        attachBankHighlight(bankPart)
+        print("[BankESP] Подсветка включена для:", bankPart.Name)
+    else
+        print("[BankESP] Банк не найден, попробуйте указать путь вручную")
+    end
     createBankHud()
     updateBankTexts()
 
@@ -473,7 +561,7 @@ local function enableBankESP()
         local tick = 0
         while Settings.bankESP do
             tick = tick + 1
-            if (not bankPart and not bankValue) and tick % 10 == 0 then
+            if (not bankPart) and tick % 10 == 0 then
                 scanBank()
                 if bankPart then attachBankHighlight(bankPart) end
             end
@@ -497,7 +585,8 @@ local function disableBankESP()
     bankBBs = {}
     pcall(function() BankHud:Destroy() end)
     BankHud, hudLbl = nil, nil
-    bankPart, bankValue = nil, nil
+    bankPart, bankFolder, bankTimerModel, bankTimerLabel = nil, nil, nil, nil
+    bankIsJewellery = false
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1438,7 +1527,7 @@ end)
 local settingsFrame = TabFrames["Settings"]
 local secS = createSection(settingsFrame, "Information")
 local info2 = Instance.new("TextLabel", secS)
-info2.Text = "霓 Neonation WH Menu v2.4\nBank ESP: авто-поиск банка (bank, puente, banco), отображение статуса/таймера"
+info2.Text = "霓 Neonation WH Menu v2.5\nBank ESP: авто-поиск Bank / Jewellery по точным путям"
 info2.Font = Enum.Font.Gotham
 info2.TextSize = 11
 info2.TextColor3 = C.text
@@ -1529,6 +1618,6 @@ addConnection(UserInputService.InputChanged:Connect(function(inp)
     end
 end))
 
--- Автооткрытие для теста (можно убрать)
+-- Автооткрытие для теста
 task.delay(0.5, openMenu)
-print("霓 Neonation WH Menu v2.4 loaded — Press K to toggle")
+print("霓 Neonation WH Menu v2.5 loaded — Press K to toggle")
