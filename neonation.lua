@@ -3,7 +3,6 @@
 -- ║       v2.3 — Bank ESP с таймером ограбления                   ║
 -- ╚══════════════════════════════════════════════════════════════╝
 -- K  — открыть/закрыть меню
--- Сохрани как neonation_wh.txt / .lua
 -- ----------------------------------------------------------------
 
 -- ═══════════════════════════════════════════════════════════════
@@ -235,9 +234,11 @@ local function refreshESP()
 end
 
 -- ═══════════════════════════════════════════════════════════════
---  BANK ESP (подсветка + таймер ограбления)  [NEW v2.3]
+--  BANK ESP (подсветка + таймер ограбления)  [UPDATED v2.4]
+--  Теперь ищет "bank", "bankrobbery", "puente", "banco" и атрибуты.
+--  На банке отображается "Puente Bank", в HUD – только статус/таймер.
 -- ═══════════════════════════════════════════════════════════════
-local BANK_MANUAL_PATH = ""   -- <-- сюда можно вписать точный путь
+local BANK_MANUAL_PATH = ""   -- <-- можно вписать точный путь, если авто-поиск не справляется
 
 local bankPart, bankValue = nil, nil
 local bankBBs = {}
@@ -263,12 +264,14 @@ end
 local function scanBank()
     bankPart, bankValue = nil, nil
 
+    -- Если задан ручной путь
     if BANK_MANUAL_PATH ~= "" then
         local obj = getObjectByPath(BANK_MANUAL_PATH)
         if obj then classifyBank(obj) end
         if bankPart or bankValue then return end
     end
 
+    -- Собираем все объекты из Workspace и ReplicatedStorage
     local all = {}
     pcall(function()
         for _, d in ipairs(Workspace:GetDescendants()) do table.insert(all, d) end
@@ -277,12 +280,47 @@ local function scanBank()
         for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do table.insert(all, d) end
     end)
 
+    -- Ищем по имени и атрибутам
     for _, d in ipairs(all) do
-        if d.Name:lower():find("bankrobbery") then classifyBank(d) end
-    end
-    for _, d in ipairs(all) do
-        if d.Name:lower():find("bank") then classifyBank(d) end
+        local name = d.Name:lower()
+        if name:find("bankrobbery") or name:find("bank") or name:find("puente") or name:find("banco") then
+            classifyBank(d)
+        end
+        -- Если ещё не нашли bankPart, проверяем атрибуты
+        if not bankPart then
+            local attrs = d:GetAttributes()
+            for key, _ in pairs(attrs) do
+                local k = key:lower()
+                if k:find("bank") or k:find("robbery") or k:find("puente") then
+                    classifyBank(d)
+                    break
+                end
+            end
+        end
         if bankPart and bankValue then break end
+    end
+
+    -- Если нашли только bankPart, но нет bankValue – попробуем найти значение внутри bankPart
+    if bankPart and not bankValue then
+        pcall(function()
+            for _, ch in ipairs(bankPart:GetChildren()) do
+                if ch:IsA("ValueBase") then
+                    bankValue = ch
+                    break
+                end
+            end
+        end)
+        if not bankValue then
+            pcall(function()
+                for _, attr in ipairs({"BankRobbery", "RobberyCooldown", "Cooldown", "Timer", "CanRob", "NextRobbery"}) do
+                    local a = bankPart:GetAttribute(attr)
+                    if a ~= nil then
+                        bankValue = bankPart -- сохраняем ссылку для чтения атрибута
+                        break
+                    end
+                end
+            end)
+        end
     end
 end
 
@@ -295,16 +333,16 @@ end
 
 local function interpretBankValue(v)
     if typeof(v) == "boolean" then
-        if v then return "МОЖНО ГРАБИТЬ" else return "НЕДОСТУПНО (кулдаун)" end
+        if v then return "Открыт" else return "Закрыт" end
     elseif typeof(v) == "number" then
         if v > 1000000000 then
             local left = v - os.time()
-            if left <= 0 then return "МОЖНО ГРАБИТЬ" end
-            return "ограбление через " .. formatTime(left)
+            if left <= 0 then return "Открыт" end
+            return "⏳ " .. formatTime(left)
         elseif v <= 0 then
-            return "МОЖНО ГРАБИТЬ"
+            return "Открыт"
         else
-            return "ограбление через " .. formatTime(v)
+            return "⏳ " .. formatTime(v)
         end
     elseif typeof(v) == "string" and v ~= "" then
         return v
@@ -376,7 +414,7 @@ local function attachBankHighlight(target)
     lbl.TextColor3 = C.bank_col
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 14
-    lbl.Text = "銀 BANK"
+    lbl.Text = "Puente Bank"  -- изменено
     Instance.new("UICorner", lbl).CornerRadius = UDim.new(0,6)
     local st = Instance.new("UIStroke", lbl)
     st.Color = C.bank_col
@@ -409,15 +447,17 @@ local function createBankHud()
     hudLbl.Font = Enum.Font.GothamBold
     hudLbl.TextSize = 13
     hudLbl.TextColor3 = C.bank_col
-    hudLbl.Text = "銀 BANK: поиск..."
+    hudLbl.Text = "Поиск банка..."  -- начальный текст
 end
 
 local function updateBankTexts()
-    local status = readBankStatus() or "инфо не найдена"
-    local full = "銀 BANK: " .. status
-    if hudLbl and hudLbl.Parent then hudLbl.Text = full end
+    local status = readBankStatus() or "не найден"
+    -- Теперь выводим только статус/таймер, без префикса
+    if hudLbl and hudLbl.Parent then hudLbl.Text = status end
     for _, data in pairs(bankBBs) do
-        if data.lbl and data.lbl.Parent then data.lbl.Text = full end
+        if data.lbl and data.lbl.Parent then
+            -- На банке оставляем "Puente Bank", менять не будем
+        end
     end
 end
 
@@ -1398,7 +1438,7 @@ end)
 local settingsFrame = TabFrames["Settings"]
 local secS = createSection(settingsFrame, "Information")
 local info2 = Instance.new("TextLabel", secS)
-info2.Text = "霓 Neonation WH Menu v2.3\nBank ESP: авто-поиск BankRobbery, таймер/статус ограбления"
+info2.Text = "霓 Neonation WH Menu v2.4\nBank ESP: авто-поиск банка (bank, puente, banco), отображение статуса/таймера"
 info2.Font = Enum.Font.Gotham
 info2.TextSize = 11
 info2.TextColor3 = C.text
@@ -1491,4 +1531,4 @@ end))
 
 -- Автооткрытие для теста (можно убрать)
 task.delay(0.5, openMenu)
-print("霓 Neonation WH Menu v2.3 loaded — Press K to toggle")
+print("霓 Neonation WH Menu v2.4 loaded — Press K to toggle")
