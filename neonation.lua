@@ -573,16 +573,16 @@ local function pickTarget(fov)
             local root = p.Character:FindFirstChild("HumanoidRootPart")
             if root then
                 local dist = (root.Position - myPos).Magnitude
-                if dist > 500 then continue end
-                local pos = getAimPosition(p.Character)
-                if pos then
-                    local sp, on = Camera:WorldToScreenPoint(pos)
-                    if on then
-                        local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                        if d < bestDist then best, bestDist = p, d end
-                    end
-                end
-            end
+               if dist <= 500 then
+      local pos = getAimPosition(p.Character)
+      if pos then
+          local sp, on = Camera:WorldToScreenPoint(pos)
+          if on then
+              local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+              if d < bestDist then best, bestDist = p, d end
+                 end
+              end
+           end
         end
     end
     return best
